@@ -1,0 +1,17 @@
+falcon-project/
+  README.md
+  .gitignore
+  requirements.txt
+  environment.yml
+  data/
+    raw/
+    processed/
+  notebooks/
+  src/
+    data/
+    features/
+    models/
+    evaluation/
+  submissions/
+  reports/
+  docs/
