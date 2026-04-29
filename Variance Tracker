@@ -1,0 +1,67 @@
+# EWMA Variance Tracker
+# Based on the quickstarter from the birdgame repo
+ 
+import math
+import numpy as np
+from birdgame.trackers.trackerbase import TrackerBase
+from birdgame.stats.fewvar import FEWVar
+from birdgame import HORIZON
+ 
+ 
+class EMWAVarTracker(TrackerBase):
+ 
+    def __init__(self, horizon=HORIZON):
+        super().__init__(horizon)
+        self.current_x = None
+        self.ewa_dx_core = FEWVar(fading_factor=0.0001)
+        self.ewa_dx_tail = FEWVar(fading_factor=0.0001)
+ 
+    def tick(self, payload, performance_metrics=None):
+        x = payload['dove_location']
+ 
+        self.add_to_quarantine(payload['time'], x)
+        prev_x = self.pop_from_quarantine(payload['time'])
+ 
+        if prev_x is not None:
+            # clipped version for normal moves, scaled version for big jumps
+            self.ewa_dx_core.update(np.clip(x - prev_x, -2, 2))
+            self.ewa_dx_tail.update(2 * (x - prev_x))
+ 
+        self.current_x = x
+ 
+    def predict(self):
+        if self.ewa_dx_core.get() == 0.0:
+            return None  # still warming up
+ 
+        return {
+            "type": "mixture",
+            "components": [
+                {
+                    "density": {
+                        "type": "builtin",
+                        "name": "norm",
+                        "params": {
+                            "loc": self.current_x,
+                            "scale": math.sqrt(self.ewa_dx_core.get())
+                        }
+                    },
+                    "weight": 0.95
+                },
+                {
+                    "density": {
+                        "type": "builtin",
+                        "name": "norm",
+                        "params": {
+                            "loc": self.current_x,
+                            "scale": math.sqrt(self.ewa_dx_tail.get())
+                        }
+                    },
+                    "weight": 0.05
+                }
+            ]
+        }
+ 
+ 
+if __name__ == "__main__":
+    tracker = EMWAVarTracker()
+    tracker.test_run(live=False, step_print=1000)
