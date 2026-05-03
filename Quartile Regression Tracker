@@ -1,0 +1,71 @@
+import numpy as np
+from river import linear_model, preprocessing, optim
+from birdgame.trackers.trackerbase import TrackerBase
+from birdgame import HORIZON
+
+
+class QuantileRegressionRiverTracker(TrackerBase):
+
+    def __init__(self, horizon=HORIZON):
+        super().__init__(horizon)
+        self.current_x = None
+        self.is_warm = False
+
+        # one model per quantile (lower bound, median, upper bound)
+        self.models = {}
+        for alpha in [0.05, 0.5, 0.95]:
+            scale = preprocessing.StandardScaler()
+            learn = linear_model.LinearRegression(
+                intercept_lr=0,
+                optimizer=optim.SGD(0.005),
+                loss=optim.losses.Quantile(alpha=alpha)
+            )
+            model = scale | learn
+            model = preprocessing.TargetStandardScaler(regressor=model)
+            self.models[f"q {alpha:.2f}"] = model
+
+    def tick(self, payload, performance_metrics=None):
+        x = payload['dove_location']
+
+        self.add_to_quarantine(payload['time'], x)
+        prev_x = self.pop_from_quarantine(payload['time'])
+
+        if prev_x is not None:
+            for m in self.models.values():
+                m.learn_one({"x": prev_x}, x)
+            self.is_warm = True
+
+        self.current_x = x
+
+    def predict(self):
+        if not self.is_warm or self.current_x is None:
+            return None
+
+        x_mean = self.models["q 0.50"].predict_one({"x": self.current_x})
+        y_lower = self.models["q 0.05"].predict_one({"x": self.current_x})
+        y_upper = self.models["q 0.95"].predict_one({"x": self.current_x})
+
+        # convert the 5th-95th percentile range to std dev
+        scale = max(abs(y_upper - y_lower) / 3.29, 1e-6)
+
+        return {
+            "type": "mixture",
+            "components": [
+                {
+                    "density": {
+                        "type": "builtin",
+                        "name": "norm",
+                        "params": {
+                            "loc": x_mean,
+                            "scale": scale
+                        }
+                    },
+                    "weight": 1
+                }
+            ]
+        }
+
+
+if __name__ == "__main__":
+    tracker = QuantileRegressionRiverTracker()
+    tracker.test_run(live=False, step_print=1000)
